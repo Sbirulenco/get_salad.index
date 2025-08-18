@@ -10,24 +10,25 @@
     .consent { padding: 12px 16px; border-radius: 8px; margin: 16px 0; background: #fff8e1; border: 1px solid #ffe082; }
     .hidden { display: none; }
     button { padding: 10px 16px; border: 0; border-radius: 8px; cursor: pointer; }
+    #readable-info p { margin: 4px 0; }
   </style>
 </head>
 <body>
   <h1>Device Info Collection (with consent)</h1>
   <p class="consent">
-    This page collects your browser & device characteristics (e.g., OS, screen, timezone, GPU, language) and sends them with your IP address to the site owner’s server for demonstration.
-    By clicking “I Agree & Start”, you consent to this collection.
+    This page collects your browser & device characteristics (e.g., OS, screen, GPU, network) and displays them here. By clicking “I Agree & Start”, you consent to this collection.
   </p>
 
   <button id="start">I Agree & Start</button>
   <div id="status"></div>
-  <h2>Your Info (also sent to server)</h2>
+
+  <h2>Your Info (JSON)</h2>
   <pre id="output">Not started yet…</pre>
 
-  <script>
-    // === Replace this AFTER you create the Codespaces server (section B) ===
-    const LOG_ENDPOINT = "https://REPLACE_WITH_CODESPACES_URL/log";
+  <h2>Your Info (Readable)</h2>
+  <div id="readable-info"></div>
 
+  <script>
     function safeGet(fn, fallback=null){ try { return fn(); } catch { return fallback; } }
 
     async function estimateRefreshRate(samples=60){
@@ -47,6 +48,19 @@
       });
     }
 
+    function getWebGLInfo(){
+      const canvas = document.createElement("canvas");
+      const gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
+      if(!gl) return null;
+      const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+      return {
+        vendor: dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : 'Unknown',
+        renderer: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : 'Unknown',
+        version: gl.getParameter(gl.VERSION),
+        shadingLanguage: gl.getParameter(gl.SHADING_LANGUAGE_VERSION)
+      };
+    }
+
     async function detectAdBlock(){
       return new Promise(res=>{
         const bait=document.createElement('div');
@@ -60,30 +74,28 @@
       });
     }
 
-    function getWebGLInfo(){
-      const canvas = document.createElement("canvas");
-      const gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
-      if(!gl) return null;
-      const info = {};
-      const dbg = gl.getExtension("WEBGL_debug_renderer_info");
-      info.vendor = dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : null;
-      info.renderer = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : null;
-      info.shadingLanguage = gl.getParameter(gl.SHADING_LANGUAGE_VERSION);
-      info.version = gl.getParameter(gl.VERSION);
-      return info;
+    async function getIP(){
+      try {
+        const res = await fetch('https://api.ipify.org?format=json');
+        const json = await res.json();
+        return json.ip;
+      } catch {
+        return 'Unknown';
+      }
     }
 
     async function collect(){
       const nav = navigator;
       const uaData = nav.userAgentData || null;
-
       const battery = nav.getBattery ? await nav.getBattery().catch(()=>null) : null;
       const refresh = await estimateRefreshRate(90).catch(()=>null);
       const adblock = await detectAdBlock().catch(()=>null);
       const webgl = getWebGLInfo();
+      const ip = await getIP();
 
       const data = {
         timestamp: new Date().toISOString(),
+        ip: ip,
         locationHref: location.href,
         referrer: document.referrer || null,
 
@@ -101,9 +113,9 @@
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         doNotTrack: nav.doNotTrack || null,
 
-        // Hardware hints (browser-limited)
+        // Hardware hints
         hardwareConcurrency: nav.hardwareConcurrency || null,
-        deviceMemory: nav.deviceMemory || null, // (GB) Chrome only
+        deviceMemory: nav.deviceMemory || null,
 
         // Screen / display
         screen: {
@@ -116,6 +128,14 @@
           devicePixelRatio: window.devicePixelRatio || 1,
           estimatedRefreshRateHz: refresh
         },
+
+        // Viewport & orientation
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+        orientation: screen.orientation ? screen.orientation.type : 'Unknown',
+
+        // Network
+        online: nav.onLine,
+        effectiveNetwork: nav.connection ? nav.connection.effectiveType : 'Unknown',
 
         // Preferences
         prefersDark: matchMedia('(prefers-color-scheme: dark)').matches,
@@ -131,10 +151,7 @@
         },
 
         // Battery
-        battery: battery ? {
-          charging: battery.charging,
-          level: battery.level
-        } : null,
+        battery: battery ? { charging: battery.charging, level: battery.level } : null,
 
         // Graphics
         webgl: webgl,
@@ -146,29 +163,38 @@
       return data;
     }
 
-    async function send(data){
-      if(!LOG_ENDPOINT.includes("REPLACE_WITH_CODESPACES_URL")){
-        try{
-          const r = await fetch(LOG_ENDPOINT, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(data)
-          });
-          return await r.json();
-        }catch(e){
-          return { ok:false, error:String(e) };
-        }
-      } else {
-        return { ok:false, error:"LOG_ENDPOINT not set yet." };
-      }
+    function displayReadableInfo(data) {
+      const container = document.getElementById('readable-info');
+      container.innerHTML = `
+        <p><strong>Public IP:</strong> ${data.ip}</p>
+        <p><strong>Browser:</strong> ${data.userAgent}</p>
+        <p><strong>Platform:</strong> ${data.platform}</p>
+        <p><strong>Languages:</strong> ${data.languages.join(', ')}</p>
+        <p><strong>Timezone:</strong> ${data.timezone}</p>
+        <p><strong>Screen Resolution:</strong> ${data.screen.width}x${data.screen.height}</p>
+        <p><strong>Available Screen:</strong> ${data.screen.availWidth}x${data.screen.availHeight}</p>
+        <p><strong>Estimated Refresh Rate:</strong> ${data.screen.estimatedRefreshRateHz} Hz</p>
+        <p><strong>GPU Vendor:</strong> ${data.webgl.vendor}</p>
+        <p><strong>GPU Renderer:</strong> ${data.webgl.renderer}</p>
+        <p><strong>WebGL Version:</strong> ${data.webgl.version}</p>
+        <p><strong>Shading Language:</strong> ${data.webgl.shadingLanguage}</p>
+        <p><strong>Touch Support:</strong> ${data.touchSupport ? 'Yes' : 'No'}</p>
+        <p><strong>Battery:</strong> ${data.battery ? (data.battery.level*100)+'%' : 'Not available'}</p>
+        <p><strong>Ad Block Likely:</strong> ${data.adBlockLikely ? 'Yes' : 'No'}</p>
+        <p><strong>Online:</strong> ${data.online ? 'Yes' : 'No'}</p>
+        <p><strong>Network Type:</strong> ${data.effectiveNetwork}</p>
+        <p><strong>Viewport:</strong> ${data.viewport.width}x${data.viewport.height}</p>
+        <p><strong>Screen Orientation:</strong> ${data.orientation}</p>
+        <p><strong>Dark Mode:</strong> ${data.prefersDark ? 'Yes' : 'No'}</p>
+        <p><strong>Reduced Motion:</strong> ${data.prefersReducedMotion ? 'Yes' : 'No'}</p>
+      `;
     }
 
-    document.getElementById('start').addEventListener('click', async ()=>{
+    document.getElementById('start').addEventListener('click', async ()=> {
       document.getElementById('status').textContent = "Collecting…";
       const data = await collect();
       document.getElementById('output').textContent = JSON.stringify(data, null, 2);
-      const res = await send(data);
-      document.getElementById('status').textContent = res && res.ok ? "Sent to server ✔" : ("Not sent: " + (res.error || 'unknown error'));
+      displayReadableInfo(data);
     });
   </script>
 </body>
